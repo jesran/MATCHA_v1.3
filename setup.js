@@ -1,10 +1,13 @@
 const { execSync, spawn } = require("child_process");
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
 
 const rootDir = __dirname;
 const backendDir = path.join(rootDir, "backend");
 const frontendDir = path.join(rootDir, "frontend");
+const backendEnvPath = path.join(backendDir, ".env");
+const backendEnvExamplePath = path.join(backendDir, ".env.example");
 
 function log(message) {
   console.log(message);
@@ -89,6 +92,157 @@ function ensureProjectStructure() {
   const packageJsonPath = path.join(frontendDir, "package.json");
   if (!fs.existsSync(packageJsonPath)) {
     exitWithError(`Frontend package.json not found at: ${packageJsonPath}`);
+  }
+}
+
+function ensureBackendEnvFile() {
+  if (fs.existsSync(backendEnvPath)) {
+    return;
+  }
+
+  if (!fs.existsSync(backendEnvExamplePath)) {
+    log("\nbackend/.env is missing and backend/.env.example was not found.");
+    log("Skipping automatic environment file creation.");
+    return;
+  }
+
+  fs.copyFileSync(backendEnvExamplePath, backendEnvPath);
+  log("\nCreated backend/.env from backend/.env.example.");
+}
+
+function parseEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+
+  const content = fs.readFileSync(filePath, "utf8");
+  const env = {};
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    env[key] = value;
+  }
+
+  return env;
+}
+
+function getOllamaInstallHint() {
+  if (process.platform === "darwin") {
+    return "Install Ollama with Homebrew: brew install --cask ollama";
+  }
+
+  if (process.platform === "win32") {
+    return "Install Ollama from https://ollama.com/download or use winget install Ollama.Ollama";
+  }
+
+  return "Install Ollama from https://ollama.com/download or run: curl -fsSL https://ollama.com/install.sh | sh";
+}
+
+function isModelAvailable(modelName) {
+  try {
+    const output = execSync("ollama list", { encoding: "utf8", stdio: "pipe" });
+    return output.includes(modelName);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isOllamaServiceReachable(baseUrl) {
+  return new Promise((resolve) => {
+    try {
+      const url = new URL(baseUrl);
+      const healthUrl = new URL("/api/tags", `${url.protocol}//${url.host}`);
+
+      const request = http.get(
+        healthUrl,
+        {
+          timeout: 2500,
+        },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode >= 200 && response.statusCode < 500);
+        }
+      );
+
+      request.on("timeout", () => {
+        request.destroy();
+        resolve(false);
+      });
+
+      request.on("error", () => {
+        resolve(false);
+      });
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+async function ensureOllamaSetup() {
+  const env = parseEnvFile(backendEnvPath);
+  const ollamaUrl = env.OLLAMA_URL || "http://localhost:11434/api/generate";
+  const ollamaModel = env.OLLAMA_MODEL || "mistral:7b";
+
+  log("\nChecking local LLM setup...");
+  log(`Configured Ollama URL: ${ollamaUrl}`);
+  log(`Configured Ollama model: ${ollamaModel}`);
+
+  if (!commandWorks("ollama --version")) {
+    log("\nOllama is not installed.");
+    log(getOllamaInstallHint());
+    log(`After installing, run: ollama pull ${ollamaModel}`);
+    log("The app will still start, but AI idea evaluation will not work until Ollama is ready.");
+    return;
+  }
+
+  log("Ollama is installed.");
+
+  const ollamaReachable = await isOllamaServiceReachable(ollamaUrl);
+  if (!ollamaReachable) {
+    log("\nOllama is installed, but the local service is not responding yet.");
+    if (process.platform === "darwin") {
+      log("Open the Ollama app, wait for it to finish starting, then rerun setup if idea evaluation does not work.");
+    } else if (process.platform === "win32") {
+      log("Start the Ollama app or service, then rerun setup if idea evaluation does not work.");
+    } else {
+      log("Start Ollama with `ollama serve`, then rerun setup if idea evaluation does not work.");
+    }
+    log(`Once the service is running, setup can download ${ollamaModel} automatically if needed.`);
+    log("The app will still start without the LLM service, but AI idea evaluation will be unavailable.");
+    return;
+  }
+
+  log("Ollama service is reachable.");
+
+  if (!isModelAvailable(ollamaModel)) {
+    log(`\nModel ${ollamaModel} is not available locally yet.`);
+    log(`Pulling ${ollamaModel} with Ollama...`);
+
+    try {
+      runCommand(`ollama pull ${ollamaModel}`);
+      log(`Model ${ollamaModel} is ready.`);
+    } catch (error) {
+      logError(`\nFailed to pull ${ollamaModel}.`);
+      const details = typeof error.stderr === "string" ? error.stderr.trim() : "";
+      if (details) {
+        logError(details);
+      }
+      log("The app will still start, but AI idea evaluation may not work until the model is downloaded.");
+      return;
+    }
+  } else {
+    log(`Model ${ollamaModel} is already available.`);
   }
 }
 
@@ -273,9 +427,10 @@ function shutdown(exitCode = 0) {
   }, 300);
 }
 
-function main() {
+async function main() {
   log("Checking dependencies...");
   ensureProjectStructure();
+  ensureBackendEnvFile();
 
   const pythonCommand = resolvePythonCommand();
   ensureCommand(
@@ -292,6 +447,7 @@ function main() {
   installBackendDependencies(pythonCommand);
   runBackendMigrations(pythonCommand);
   installFrontendDependencies();
+  await ensureOllamaSetup();
 
   const backendLaunch = getBackendLaunchConfig(pythonCommand);
   const frontendLaunch = getFrontendLaunchConfig();
@@ -326,4 +482,6 @@ function main() {
   log("\nServers are starting. Press Ctrl+C to stop both.");
 }
 
-main();
+main().catch((error) => {
+  exitWithError("Setup failed unexpectedly.", error);
+});

@@ -30,8 +30,6 @@ Demo flow for local development:
 2. Start the frontend on `http://127.0.0.1:5173`
 3. Open the frontend in your browser and create an account
 
-If you want to add live screenshots again later, place current app images in the repository and link them here.
-
 ## Tech Stack
 
 ### Frontend
@@ -373,9 +371,8 @@ No license has been specified yet. Add a license file before distributing or ope
 If you are maintaining this project for a team or portfolio, add your preferred contact method here:
 
 - GitHub Issues for bug reports and feature requests
-- Project maintainer email
-- LinkedIn or portfolio link
-
-Current placeholder support path:
+- jesran3025@gmail.com
+- https://www.linkedin.com/in/jesran-m-834832246/
+Current placeholder supportm path:
 
 - Open an issue in the project repository
